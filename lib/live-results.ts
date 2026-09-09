@@ -1,7 +1,7 @@
 export const stages=['no_candidate','candidate_solution','mechanically_verified','statement_independently_audited','externally_reviewed','legacy_automated_verification'] as const;
 export type RunResult={id:string;problem:number;revision:string;updatedAt:string;outcome:string;phase:string;direction:string;stage:string;mechanical:boolean;faithful:boolean;claimEligible:boolean;partial:boolean;artifact:string|null};
 export type LiveFeed={runs:RunResult[];publisherSeenAt:string|null;receivedAt:string};
-const outcomes=['running','proved','proved_unverified','not_proved','partial','budget_exhausted','budget_exhausted+partial','infrastructure_error','completed','stopped','unknown'];
+const outcomes=['regression_passed','regression_failed','running','proved','proved_unverified','not_proved','partial','budget_exhausted','budget_exhausted+partial','infrastructure_error','completed','stopped','unknown'];
 export function validateRun(x:unknown):RunResult{
  if(!x||typeof x!=='object'||Array.isArray(x))throw Error('Invalid run');
  const r=x as RunResult;
@@ -19,7 +19,7 @@ export function evidenceLabel(base:string,catalogue:string,runs:RunResult[]){
  const full=runs.filter(r=>r.direction!=='program');
  if(catalogue!=='Solved'&&full.some(r=>r.mechanical&&r.faithful))return 'Candidate';
  if(base==='Verified'||catalogue==='Solved'&&full.some(r=>r.mechanical&&r.faithful))return 'Verified';
- if(runs.some(r=>r.partial||r.direction==='program'&&r.mechanical))return 'Partial result';
+ if(base==='Partial result'||runs.some(r=>r.partial||r.direction==='program'&&r.mechanical))return 'Partial result';
  return runs.length? 'Attempted':base;
 }
 

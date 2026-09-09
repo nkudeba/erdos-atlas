@@ -5,3 +5,5 @@ test('open proofs remain candidates; no catalogue change',()=>{assert.equal(evid
 test('failures never erase historical success and sublemmas are partial',()=>{assert.equal(evidenceLabel('Verified','Solved',[{...run,mechanical:false}]),'Verified');assert.equal(evidenceLabel('Untried','Unsolved',[{...run,direction:'program'}]),'Partial result');});
 test('reject private fields, malformed claims, and unsafe values',()=>{assert.deepEqual(validateRun(run),run);for(const r of [{...run,prompt:'private'},{...run,problem:9999},{...run,claimEligible:true},{...run,mechanical:'true'},{...run,phase:'<script>'},{...run,revision:'old'}])assert.throws(()=>validateRun(r));});
 test('feed validates every run and allows empty initial state',()=>{const feed={runs:[],counts:[],publisherSeenAt:null,receivedAt:new Date().toISOString()};assert.deepEqual(validateFeed(feed),feed);assert.throws(()=>validateFeed({...feed,runs:[{...run,extra:'secret'}]}));});
+
+test('historical partial result is preserved after a failure',()=>{assert.equal(evidenceLabel('Partial result','Unsolved',[]),'Partial result');});

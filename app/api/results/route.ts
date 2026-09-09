@@ -8,7 +8,7 @@ export async function GET(req:Request){
  if(!req.headers.get('oai-authenticated-user-id')&&!writer(req))return Response.json({error:'Sign in required'},{status:401,headers});
  const db=database();
  // Latest five runs per problem, plus best evidence, retained across later failures.
- const rows=await db.prepare(`WITH ranked AS (SELECT payload,problem,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY updated_at DESC,id) AS recency,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY json_extract(payload,'$.claimEligible') DESC,json_extract(payload,'$.mechanical') DESC,json_extract(payload,'$.faithful') DESC,updated_at DESC) AS evidence FROM run_results) SELECT payload FROM ranked WHERE recency<=5 OR evidence=1`).all<{payload:string}>();
+ const rows=await db.prepare(`WITH ranked AS (SELECT payload,problem,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY updated_at DESC,id) AS recency,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY json_extract(payload,'$.claimEligible') DESC,json_extract(payload,'$.mechanical') DESC,json_extract(payload,'$.faithful') DESC,json_extract(payload,'$.partial') DESC,updated_at DESC) AS evidence FROM run_results) SELECT payload FROM ranked WHERE recency<=5 OR evidence=1`).all<{payload:string}>();
  const publisher=await db.prepare('SELECT seen_at FROM publisher_status WHERE id=1').first<{seen_at:string}>();
  const counts=await db.prepare('SELECT problem,COUNT(*) AS count FROM run_results GROUP BY problem').all<{problem:number;count:number}>();
  return Response.json({runs:rows.results.map(r=>JSON.parse(r.payload)),counts:counts.results,publisherSeenAt:publisher?.seen_at??null,receivedAt:new Date().toISOString()},{headers});
