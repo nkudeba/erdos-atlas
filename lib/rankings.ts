@@ -12,6 +12,6 @@ export function validateFilters(input:unknown,categories:string[]):Filters{
  for(const value of Object.values(o))if(typeof value!=='string')throw new Error('Filters must be strings');
  const f={...defaultFilters,...o} as Filters;
  if(f.query.length>500)throw new Error('Search is too long');
- if(!['All','Solved','Unsolved','Independent'].includes(f.status)||!categories.includes(f.category)||!['All','Verified','Attempted','Partial result','Untried'].includes(f.harness))throw new Error('Invalid filter value');
+ if(!['All','Solved','Unsolved','Independent'].includes(f.status)||!categories.includes(f.category)||!['All','Verified','Candidate','Attempted','Partial result','Untried'].includes(f.harness))throw new Error('Invalid filter value');
  return f;
 }
