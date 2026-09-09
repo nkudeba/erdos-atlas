@@ -26,7 +26,7 @@ export default function Home(){
  const currentSelected=selected?problems.find(p=>p.id===selected.id)||selected:null;
  const publisherStale=!!live?.publisherSeenAt&&clock-Date.parse(live.publisherSeenAt)>120000;
  useEffect(()=>{let stopped=false;let timer:ReturnType<typeof setTimeout>;const abort=new AbortController();
-  async function refresh(){try{const res=await fetch('/api/results',{cache:'no-store',signal:abort.signal});if(!res.ok)throw Error();const body=validateFeed(await res.json());if(!stopped){setLive(body);setFeedError(false);}}catch{if(!stopped)setFeedError(true);}finally{if(!stopped){setClock(Date.now());timer=setTimeout(refresh,30000);}}}
+  async function refresh(){try{const res=await fetch('/api/results',{cache:'no-store',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(15000)])});if(!res.ok)throw Error();const body=validateFeed(await res.json());if(!stopped){setLive(body);setFeedError(false);}}catch{if(!stopped)setFeedError(true);}finally{if(!stopped){setClock(Date.now());timer=setTimeout(refresh,30000);}}}
   void refresh();return()=>{stopped=true;abort.abort();clearTimeout(timer);};
  },[]);
 
