@@ -1,5 +1,5 @@
 import {database,ingestSecret} from '@/lib/results-db';
-import {validateRun, type RunResult} from '@/lib/live-results';
+import {validateRun, validateRanking, type RunResult, type RankingOverride} from '@/lib/live-results';
 import {timingSafeEqual} from 'node:crypto';
 export const dynamic='force-dynamic';
 const headers={'Cache-Control':'private, no-store','Vary':'Cookie, OAI-Sites-Authorization'};
@@ -11,15 +11,22 @@ export async function GET(req:Request){
  const rows=await db.prepare(`WITH ranked AS (SELECT payload,problem,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY updated_at DESC,id) AS recency,ROW_NUMBER() OVER (PARTITION BY problem ORDER BY json_extract(payload,'$.claimEligible') DESC,json_extract(payload,'$.mechanical') DESC,json_extract(payload,'$.faithful') DESC,json_extract(payload,'$.partial') DESC,updated_at DESC) AS evidence FROM run_results) SELECT payload FROM ranked WHERE recency<=5 OR evidence=1`).all<{payload:string}>();
  const publisher=await db.prepare('SELECT seen_at FROM publisher_status WHERE id=1').first<{seen_at:string}>();
  const counts=await db.prepare('SELECT problem,COUNT(*) AS count FROM run_results GROUP BY problem').all<{problem:number;count:number}>();
- return Response.json({runs:rows.results.map(r=>JSON.parse(r.payload)),counts:counts.results,publisherSeenAt:publisher?.seen_at??null,receivedAt:new Date().toISOString()},{headers});
+ const rankings=await db.prepare('SELECT payload FROM problem_rankings').all<{payload:string}>();
+ return Response.json({runs:rows.results.map(r=>JSON.parse(r.payload)),counts:counts.results,rankings:rankings.results.map(r=>JSON.parse(r.payload)),publisherSeenAt:publisher?.seen_at??null,receivedAt:new Date().toISOString()},{headers});
 }
 export async function POST(req:Request){
  if(!writer(req))return Response.json({error:'Unauthorized publisher'},{status:401,headers});
  if(Number(req.headers.get('content-length')||0)>150000)return Response.json({error:'Too large'},{status:413,headers});
- let runs:RunResult[];
- try{const raw=await req.text();if(raw.length>150000)throw Error();const body=JSON.parse(raw);if(body.schemaVersion!==1||!Array.isArray(body.runs)||body.runs.length>100||Object.keys(body).some(k=>!['schemaVersion','runs'].includes(k)))throw Error();runs=body.runs.map(validateRun);}catch{return Response.json({error:'Invalid results payload'},{status:400,headers});}
+ let runs:RunResult[];let rankings:RankingOverride[];
+ try{const raw=await req.text();if(raw.length>150000)throw Error();const body=JSON.parse(raw);if(body.schemaVersion!==1||!Array.isArray(body.runs)||body.runs.length>100||Object.keys(body).some(k=>!['schemaVersion','runs','rankings'].includes(k)))throw Error();
+  const supplied=body.rankings===undefined?[]:body.rankings;if(!Array.isArray(supplied)||supplied.length>100)throw Error();
+  runs=body.runs.map(validateRun);rankings=supplied.map(validateRanking);
+  if(new Set(rankings.map(r=>r.problem)).size!==rankings.length)throw Error();
+ }catch{return Response.json({error:'Invalid results payload'},{status:400,headers});}
  const db=database();const statements=runs.map(r=>db.prepare('INSERT INTO run_results (id,problem,revision,updated_at,payload) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET problem=excluded.problem,revision=excluded.revision,updated_at=excluded.updated_at,payload=excluded.payload WHERE excluded.revision>run_results.revision').bind(r.id,r.problem,r.revision,r.updatedAt,JSON.stringify(r)));
+ // Same idempotent, newer-revision-only rule as runs: a replayed or stale batch cannot roll a score back.
+ statements.push(...rankings.map(r=>db.prepare('INSERT INTO problem_rankings (problem,revision,updated_at,payload) VALUES (?,?,?,?) ON CONFLICT(problem) DO UPDATE SET revision=excluded.revision,updated_at=excluded.updated_at,payload=excluded.payload WHERE excluded.revision>problem_rankings.revision').bind(r.problem,r.revision,r.updatedAt,JSON.stringify(r))));
  statements.push(db.prepare('INSERT INTO publisher_status (id,seen_at) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at').bind(new Date().toISOString()));
  await db.batch(statements);
- return Response.json({accepted:runs.length},{headers});
+ return Response.json({accepted:runs.length,rankings:rankings.length},{headers});
 }
