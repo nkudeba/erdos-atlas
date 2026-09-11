@@ -23,21 +23,27 @@ export function evidenceLabel(base:string,catalogue:string,runs:RunResult[]){
  return runs.length? 'Attempted':base;
 }
 
-export type RankingOverride={problem:number;revision:string;updatedAt:string;score:number;rationale:string[];requirements:string[]};
+export type RankingOverride={problem:number;revision:string;updatedAt:string;score:number;rationale:string[];requirements:string[];partialScore:number|null;brief?:string|null};
 // Overlaid on the baked snapshot so a finding recorded locally reaches the site without a redeploy.
 // Rank and tier are NOT published: the client recomputes both, so one changed score cannot desynchronize them.
 export function validateRanking(x:unknown):RankingOverride{
  if(!x||typeof x!=='object'||Array.isArray(x))throw Error('Invalid ranking');
  const r=x as RankingOverride;
- const keys=['problem','revision','updatedAt','score','rationale','requirements'];
- if(Object.keys(r).length!==keys.length||Object.keys(r).some(k=>!keys.includes(k)))throw Error('Invalid fields');
+ // `brief` is optional on the wire: a publisher that predates briefs sends rows without it, and those
+ // must still validate. Everything else is required exactly.
+ const required=['problem','revision','updatedAt','score','rationale','requirements','partialScore'];
+ const keys=Object.keys(r);
+ if(required.some(k=>!keys.includes(k))||keys.some(k=>!required.includes(k)&&k!=='brief'))throw Error('Invalid fields');
  if(!Number.isInteger(r.problem)||r.problem<1||r.problem>1217||!/^\d{20}$/.test(r.revision))throw Error('Invalid identity');
  if(typeof r.updatedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(r.updatedAt)||!Number.isFinite(Date.parse(r.updatedAt)))throw Error('Invalid time');
  if(!Number.isInteger(r.score)||r.score<1||r.score>99)throw Error('Invalid score');
+ if(!(r.partialScore===null||Number.isInteger(r.partialScore)&&r.partialScore>=1&&r.partialScore<=80))throw Error('Invalid partial score');
  for(const field of [r.rationale,r.requirements]){
   if(!Array.isArray(field)||field.length>12||field.some(s=>typeof s!=='string'||!s.length||s.length>600))throw Error('Invalid prose');
  }
- return r;
+ // The brief is untrusted markdown from the publisher; it is rendered as plain text, never as HTML.
+ if(!(r.brief===undefined||r.brief===null||typeof r.brief==='string'&&r.brief.length>0&&r.brief.length<=20000))throw Error('Invalid brief');
+ return {...r,brief:r.brief??null};
 }
 export const tierFor=(score:number,harness:string)=>harness==='Verified'?'Demonstrated':score>=70?'Promising':score>=50?'Plausible':score>=30?'Difficult':score>=15?'Research':'Frontier';
 

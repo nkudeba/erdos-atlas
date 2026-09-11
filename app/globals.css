@@ -57,3 +57,19 @@
 .katex {font-size:1.04em}.display-math{display:block;overflow-x:auto;padding:3px 0}.full-statement .katex-display{margin:.6em 0}.pagination [data-slot=pagination-content]{gap:12px}.statement .katex{white-space:normal}
 
 .feed-status{margin:0 0 20px;padding:14px 18px;background:#eef5ff;border-left:3px solid #356deb;font-size:14px;display:flex;flex-wrap:wrap;gap:8px 24px}.feed-status span,.feed-status small{color:#53627c}.feed-status small{width:100%;font-size:13px}.feed-status.stale{background:#fff7e6;border-color:#b97413}.run-history{margin:24px 0;padding:18px;background:#f3f6fb;border-radius:10px}.run-history article{border-top:1px solid #dce3ed;padding:12px 0}.run-history small{display:block;color:#58677e;font-size:13px}.run-history p{font-size:14px}
+
+/* Plain-language brief on the problem detail panel */
+.brief{border:1px solid var(--border,#2a2a2a);border-left:3px solid var(--accent,#7aa2f7);
+       padding:14px 16px;margin:16px 0;border-radius:2px}
+.brief>h3{margin:0 0 10px;font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;opacity:.7}
+.brief-facts{display:flex;flex-wrap:wrap;gap:8px 22px;margin:0 0 12px;padding:0 0 12px;
+             border-bottom:1px solid var(--border,#2a2a2a)}
+.brief-facts>div{display:flex;flex-direction:column;gap:1px}
+.brief-facts dt{font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;opacity:.55}
+.brief-facts dd{margin:0;font-size:.85rem;font-variant-numeric:tabular-nums}
+.brief-body h4{margin:14px 0 4px;font-size:.9rem}
+.brief-body h4:first-child{margin-top:0}
+.brief-body p{margin:0 0 8px;line-height:1.6;font-size:.9rem}
+.brief-body ul{margin:0 0 8px;padding-left:1.1rem}
+.brief-body li{margin-bottom:4px;line-height:1.55;font-size:.9rem}
+.brief-body code{font-size:.85em;padding:1px 4px;border-radius:2px;background:rgba(127,127,127,.16)}

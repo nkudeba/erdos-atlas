@@ -28,7 +28,7 @@ test('tool input rejects invalid states',()=>{
  for(const bad of [null,[],{status:'Open'},{query:5},{category:'made up'},{query:'x'.repeat(501)},{extra:'x'}])assert.throws(()=>validateFilters(bad,categories));
 });
 
-const ranking=(over={})=>({problem:488,revision:'20260910180000123456',updatedAt:'2026-09-10T18:00:00.000Z',score:8,rationale:['near-misses come from proved-safe families'],requirements:['verify the third-party claim first'],...over});
+const ranking=(over={})=>({problem:488,revision:'20260910180000123456',updatedAt:'2026-09-10T18:00:00.000Z',score:8,rationale:['near-misses come from proved-safe families'],requirements:['verify the third-party claim first'],partialScore:63,...over});
 
 test('published score revisions are validated, not trusted',()=>{
  assert.deepEqual(validateRanking(ranking()).problem,488);
@@ -39,6 +39,7 @@ test('published score revisions are validated, not trusted',()=>{
    ranking({score:0}),ranking({score:100}),ranking({score:8.5}),
    ranking({rationale:'a string'}),ranking({rationale:[123]}),ranking({rationale:['']}),
    ranking({rationale:['x'.repeat(601)]}),ranking({requirements:Array(13).fill('x')}),
+   ranking({partialScore:0}),ranking({partialScore:81}),ranking({partialScore:1.5}),ranking({partialScore:'63'}),
    {...ranking(),extra:1}])assert.throws(()=>validateRanking(bad),`accepted ${JSON.stringify(bad)?.slice(0,60)}`);
  // a row missing a field is rejected too
  const {score,...missing}=ranking();assert.throws(()=>validateRanking(missing));
@@ -72,4 +73,28 @@ test('an overlaid score re-sorts the table and keeps ranks contiguous',()=>{
  assert.equal(new Set(merged.map(p=>p.id)).size,rows.length);
  // every problem survives the overlay: no row is dropped or duplicated
  assert.deepEqual(merged.map(p=>p.id).sort((a,b)=>a-b),rows.map(p=>p.id).sort((a,b)=>a-b));
+});
+
+test('partial-result opportunity is a separate axis, nullable, and never mixed into priority',()=>{
+ assert.equal(validateRanking(ranking({partialScore:null})).partialScore,null);
+ assert.equal(validateRanking(ranking()).partialScore,63);
+ // the two axes are independent: a dead-end priority can carry real partial value
+ const unsolved=rows.filter(p=>p.status==='Unsolved'&&p.partial);
+ assert.ok(unsolved.length>100,'unsolved rows should carry the axis');
+ assert.ok(rows.filter(p=>p.status==='Solved').every(p=>!p.partial),'solved rows have no partial axis');
+ for(const p of unsolved)assert.ok(p.partial.score>=1&&p.partial.score<=80,`#${p.id} out of range`);
+ assert.ok(unsolved.some(p=>p.score<15&&p.partial.score>50),'a low-priority target can still be worth partial work');
+});
+
+test('a ranking override carries a plain-language brief, bounded and optional',()=>{
+ const base={problem:273,revision:'1'.repeat(20),updatedAt:'2026-09-11T00:00:00.000Z',
+             score:6,rationale:['why'],requirements:['what'],partialScore:51,brief:'# In plain language\nText.'};
+ assert.equal(validateRanking(base).brief,base.brief);
+ assert.equal(validateRanking({...base,brief:null}).brief,null);          // a problem may have no brief
+ assert.throws(()=>validateRanking({...base,brief:''}),/Invalid brief/);   // but not an empty one
+ assert.throws(()=>validateRanking({...base,brief:'x'.repeat(20001)}),/Invalid brief/);
+ assert.throws(()=>validateRanking({...base,brief:12}),/Invalid brief/);
+ const {brief,...without}=base;              // an older publisher omits it entirely: tolerated, normalized
+ assert.equal(validateRanking(without).brief,null);
+ assert.throws(()=>validateRanking({...base,unexpected:1}),/Invalid fields/);
 });
