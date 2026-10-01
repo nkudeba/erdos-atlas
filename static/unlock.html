@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Private site</title>
+<style id="unlock-style">
+ /* Scoped to the locked state and removed at launch, so none of it reaches the app's own styles. */
+ body.locked{margin:0;min-height:100vh;display:grid;place-items:center;color-scheme:light dark;background:Canvas;color:CanvasText;
+  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+ .locked form{display:grid;gap:12px;width:min(340px,calc(100vw - 32px))}
+ .locked h1{font-size:18px;margin:0} .locked p{margin:0;font-size:14px;opacity:.75}
+ .locked input[type=password]{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid color-mix(in srgb,CanvasText 25%,transparent);background:Canvas;color:CanvasText}
+ .locked button{font:inherit;padding:10px 12px;border-radius:8px;border:0;background:CanvasText;color:Canvas;cursor:pointer}
+ .locked label{font-size:14px;display:flex;gap:8px;align-items:center} .locked #msg{min-height:1.2em}
+</style>
+</head>
+<body class="locked">
+<div id="root">
+ <form id="unlock" hidden>
+  <h1>This site is encrypted</h1>
+  <p>Enter the passphrase to open it. Nothing leaves this browser.</p>
+  <input id="pass" type="password" autocomplete="current-password" aria-label="Passphrase" required>
+  <label><input id="remember" type="checkbox" checked> Remember on this device</label>
+  <button type="submit">Open</button>
+  <p id="msg" role="status"></p>
+ </form>
+</div>
+<script type="module">
+// Everything published beside this page is IV || AES-256-GCM(gzip(content)), keyed by PBKDF2-SHA256 of the
+// passphrase with the salt in meta.json. This page holds no content of its own.
+const $ = (id) => document.getElementById(id);
+const form = $('unlock'), msg = $('msg');
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const meta = await (await fetch('meta.json', { cache: 'no-store' })).json();
+const SLOT = 'atlas-key-' + meta.kdf.salt.slice(0, 16);
+async function decrypt(key, bytes) {
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12));
+  const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function derive(pass) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: b64(meta.kdf.salt), iterations: meta.kdf.iterations },
+    base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']);
+}
+async function opens(key) { try { await decrypt(key, b64(meta.check)); return true; } catch { return false; } }
+function lock() { localStorage.removeItem(SLOT); sessionStorage.removeItem(SLOT); location.reload(); }
+async function launch(key) {
+  const res = await fetch(meta.app, { cache: 'no-store' });
+  const app = JSON.parse(new TextDecoder().decode(await decrypt(key, new Uint8Array(await res.arrayBuffer()))));
+  document.getElementById('unlock-style')?.remove();
+  document.body.classList.remove('locked');
+  const style = document.createElement('style');
+  style.textContent = app.css;
+  document.head.append(style);
+  window.__ATLAS__ = { key, meta, lock };
+  const script = document.createElement('script');
+  script.type = 'module';
+  script.textContent = app.js;
+  document.body.append(script);
+}
+const saved = localStorage.getItem(SLOT) || sessionStorage.getItem(SLOT);
+let launched = false;
+if (saved) {
+  try {
+    const key = await crypto.subtle.importKey('raw', b64(saved), 'AES-GCM', true, ['decrypt']);
+    if (await opens(key)) { await launch(key); launched = true; } else { localStorage.removeItem(SLOT); sessionStorage.removeItem(SLOT); }
+  } catch { localStorage.removeItem(SLOT); sessionStorage.removeItem(SLOT); }
+}
+if (!launched) { form.hidden = false; $('pass').focus(); }
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = 'Opening…';
+  const key = await derive($('pass').value);
+  if (!(await opens(key))) { msg.textContent = 'That passphrase does not open this site.'; return; }
+  const raw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('raw', key))));
+  ($('remember').checked ? localStorage : sessionStorage).setItem(SLOT, raw);
+  try { await launch(key); } catch (err) { msg.textContent = 'Could not open the site: ' + err.message; }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+'use client';
+import { useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { filterProblems, validateFilters } from '@/lib/rankings';
+import { MathText } from '@/components/math-text';
+import { Pagination, PaginationContent, PaginationItem } from '@/components/ui/pagination';
+import { ArrowUpRight, Search, SlidersHorizontal, Check, X, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {evidenceLabel, tierFor, validateFeed, type RunResult, type LiveFeed, type RankingOverride} from '@/lib/live-results';
+
+type Problem = {id:number;rank:number;statement:string;status:string;state:string;tags:string[];score:number;tier:string;harness:string;rationale:string[];requirements:string[];formal:string;review:string;signals:{label:string;points:number}[];url:string;context?:string;partial?:{score:number;rationale:string[]}|null;assessed?:{on:string|null;sources:string[];searchFloor:number|null};brief?:string|null;};
+// Where the page's data comes from. The Sites build passes its baked snapshot and /api/results
+// (app/page.tsx); the encrypted static build passes decrypted files (static/app.tsx). The snapshot
+// is never imported here, so a build of this component alone carries no data.
+export type Snapshot = {meta: any; problems: unknown[]};
+export type AtlasSource = {data: Snapshot; loadFeed: (signal: AbortSignal) => Promise<unknown>;
+ pollMs: number; staleAfterMs: number; refreshLabel: string};
+// Plain-language brief: what the problem asks, what a run actually found, what would move it.
+// Written by harness.py stage_brief (or by hand) into atlas-data/briefs/<n>.md, and published on the
+// same live channel as score revisions. The text is untrusted publisher content, so it is parsed into
+// React elements and never injected as HTML.
+function parseBrief(text:string){
+ const facts:[string,string][]=[];let body=text;
+ const m=/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+ if(m){
+  for(const line of m[1].split(/\r?\n/)){
+   const kv=/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line.trim());
+   if(kv&&kv[2])facts.push([kv[1].replace(/_/g,' '),kv[2].replace(/^["']|["']$/g,'')]);
+  }
+  body=text.slice(m[0].length);
+ }
+ return {facts,body};
+}
+const FACTS_SHOWN=['solved','outcome','certified','search floor','cost usd','updated'];
+function Inline({text}:{text:string}){
+ return <>{text.split(/(`[^`]+`)/).map((part,i)=>part.startsWith('`')&&part.endsWith('`')&&part.length>2
+  ?<code key={i}>{part.slice(1,-1)}</code>:<span key={i}>{part}</span>)}</>;
+}
+function Brief({text}:{text:string}){
+ const {facts,body}=useMemo(()=>parseBrief(text),[text]);
+ const shown=facts.filter(([k])=>FACTS_SHOWN.includes(k));
+ const blocks:React.ReactNode[]=[];
+ const lines=body.split(/\r?\n/);
+ let para:string[]=[],list:string[]=[];
+ const flush=()=>{
+  if(list.length){blocks.push(<ul key={blocks.length}>{list.map((li,i)=><li key={i}><Inline text={li}/></li>)}</ul>);list=[];}
+  if(para.length){blocks.push(<p key={blocks.length}><Inline text={para.join(' ')}/></p>);para=[];}
+ };
+ for(const raw of lines){
+  const line=raw.trim();
+  if(!line){flush();continue;}
+  if(/^#{1,6}\s/.test(line)){flush();blocks.push(<h4 key={blocks.length}>{line.replace(/^#{1,6}\s+/,'')}</h4>);continue;}
+  if(/^[-*]\s+/.test(line)){if(para.length)flush();list.push(line.replace(/^[-*]\s+/,''));continue;}
+  if(list.length)flush();
+  para.push(line);
+ }
+ flush();
+ return <section className="brief">
+  <h3>In plain language</h3>
+  {shown.length>0&&<dl className="brief-facts">{shown.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>}
+  <div className="brief-body">{blocks}</div>
+ </section>;
+}
+function Picker({label,value,options,onChange}:{label:string;value:string;options:string[];onChange:(v:string)=>void}) { return <div className="filter"><label>{label}</label><Select value={value} onValueChange={v=>onChange(v || 'All')}><SelectTrigger aria-label={label}><SelectValue>{value}</SelectValue></SelectTrigger><SelectContent>{options.map(v=><SelectItem key={v} value={v}>{v}</SelectItem>)}</SelectContent></Select></div> }
+export function Atlas({source}:{source:AtlasSource}){
+ const data=source.data;const baseline=data.problems as Problem[];
+ const [query,setQuery]=useState('');const [status,setStatus]=useState('All');const [category,setCategory]=useState('All');const [harness,setHarness]=useState('All');const [page,setPage]=useState(0);const [selected,setSelected]=useState<Problem|null>(null);const [method,setMethod]=useState(false);
+ const [live,setLive]=useState<(LiveFeed & {counts:{problem:number;count:number}[];rankings:RankingOverride[]})|null>(null);
+ const [feedError,setFeedError]=useState(false);
+ const [clock,setClock]=useState(()=>Date.now());
+ const byProblem=useMemo(()=>{const m=new Map<number,RunResult[]>();for(const r of live?.runs||[]){m.set(r.problem,[...(m.get(r.problem)||[]),r]);}for(const rows of m.values())rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));return m;},[live]);
+ // Overlay whatever the harness has learned since this build: live evidence sets `harness`, published
+ // ranking overrides set `score`/`rationale`/`requirements`, and rank and tier are recomputed from those
+ // with the ranker's own rules (sort by -score then id) so the whole table stays internally consistent.
+ const overrides=useMemo(()=>new Map((live?.rankings||[]).map(r=>[r.problem,r])),[live]);
+ const problems=useMemo(()=>{
+  const merged=baseline.map(p=>{
+   const o=overrides.get(p.id);
+   const harness=evidenceLabel(p.harness,p.status,byProblem.get(p.id)||[]);
+   const score=o?o.score:p.score;
+   return {...p,harness,score,tier:tierFor(score,harness),
+    rationale:o?o.rationale:p.rationale,requirements:o?o.requirements:p.requirements,
+    partial:o&&o.partialScore!==null?{score:o.partialScore,rationale:p.partial?.rationale??[]}:p.partial,
+    brief:o&&o.brief!==null?o.brief:p.brief,
+    signals:o?[{label:'Revised after a later harness assessment',points:score}]:p.signals};
+  });
+  merged.sort((a,b)=>b.score-a.score||a.id-b.id);
+  return merged.map((p,i)=>({...p,rank:i+1}));
+ },[byProblem,overrides]);
+ const currentSelected=selected?problems.find(p=>p.id===selected.id)||selected:null;
+ const publisherStale=!!live?.publisherSeenAt&&clock-Date.parse(live.publisherSeenAt)>source.staleAfterMs;
+ useEffect(()=>{let stopped=false;let timer:ReturnType<typeof setTimeout>;const abort=new AbortController();
+  async function refresh(){try{const body=validateFeed(await source.loadFeed(AbortSignal.any([abort.signal,AbortSignal.timeout(15000)])));if(!stopped){setLive(body);setFeedError(false);}}catch{if(!stopped)setFeedError(true);}finally{if(!stopped){setClock(Date.now());timer=setTimeout(refresh,source.pollMs);}}}
+  void refresh();return()=>{stopped=true;abort.abort();clearTimeout(timer);};
+ },[]);
+
+ const categories=useMemo(()=>['All',...Array.from(new Set(problems.flatMap(p=>p.tags))).sort()],[]);
+ const filtered=useMemo(()=>filterProblems(problems,{query,status,category,harness}),[problems,query,status,category,harness]);
+ useEffect(()=>{setPage(p=>Math.min(p,Math.max(0,Math.ceil(filtered.length/30)-1)));},[filtered.length]);
+ const change=(fn:(v:string)=>void)=>(v:string)=>{fn(v);setPage(0)};
+ const reset=()=>{setQuery('');setStatus('All');setCategory('All');setHarness('All');setPage(0)};
+ useEffect(()=>{
+  type Tool={name:string;title:string;description:string;inputSchema:object;annotations:{readOnlyHint:boolean;untrustedContentHint:boolean};execute:(input:unknown)=>unknown};
+  const context=(document as Document & {modelContext?:{registerTool:(t:Tool,o:{signal:AbortSignal})=>void|Promise<void>}}).modelContext;
+  if(!context?.registerTool)return;
+  const lifecycle=new AbortController();
+  const register=(tool:Tool)=>{try{void Promise.resolve(context.registerTool(tool,{signal:lifecycle.signal})).catch(()=>{});}catch{/* Optional browser capability. */}};
+  register({name:'filter_erdos_rankings',title:'Filter Erdős rankings',description:'Set the visible catalogue filters and return matching problems in priority order. Omitted filters reset to All.',inputSchema:{type:'object',properties:{query:{type:'string',maxLength:500},status:{type:'string',enum:['All','Solved','Unsolved','Independent']},category:{type:'string',enum:categories},harness:{type:'string',enum:['All','Verified','Candidate','Attempted','Partial result','Untried']}},additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:(input)=>{const f=validateFilters(input,categories);const results=filterProblems(problems,f);flushSync(()=>{setQuery(f.query);setStatus(f.status);setCategory(f.category);setHarness(f.harness);setPage(0)});return {filters:f,total:results.length,first20:results.slice(0,20).map(p=>({id:p.id,rank:p.rank,score:p.score,status:p.status,harness:p.harness}))}}});
+  register({name:'open_erdos_assessment',title:'Open a problem assessment',description:'Open the visible detail panel for a specific problem and return its reasons and requirements.',inputSchema:{type:'object',properties:{id:{type:'integer',minimum:1,maximum:1217}},required:['id'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:true},execute:(input)=>{if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||!('id' in input)||typeof input.id!=='number'||!Number.isInteger(input.id))throw new Error('A numeric problem id is required');const p=problems.find(p=>p.id===input.id);if(!p)throw new Error('Unknown problem');flushSync(()=>setSelected(p));return {id:p.id,rank:p.rank,brief:p.brief??null,rationale:p.rationale,requirements:p.requirements}}});
+  return ()=>lifecycle.abort();
+ },[categories,problems]);
+ const size=30;const pages=Math.max(1,Math.ceil(filtered.length/size));const shown=filtered.slice(page*size,(page+1)*size);
+ return <><header className="top"><div className="brand"><span className="mark">E<span>∞</span></span><span>Erdős <b>Atlas</b></span></div><div className="top-right"><span className="live-dot"/>Harness research index<Button variant="ghost" onClick={()=>setMethod(true)}><BookOpen size={16}/>How we rank</Button></div></header>
+ <main><section className="intro"><div><div className="eyebrow">PROBLEM EXPLORER / 01</div><h1>Where should we try next?</h1><p>Every Erdős problem, ordered by estimated fit for our proof harness.</p></div><div className="snapshot">CATALOGUE SNAPSHOT<strong>{data.meta.snapshot}</strong><a href="https://www.erdosproblems.com" target="_blank" rel="noreferrer">Erdős Problems <ArrowUpRight size={14}/></a></div></section>
+ <section className="stats"><div><span>Problems indexed</span><strong>{data.meta.total.toLocaleString()}</strong></div><div><span>Solved in the literature</span><strong>{problems.filter(p=>p.status==='Solved').length.toLocaleString()}</strong></div><div><span>Unsolved</span><strong>{problems.filter(p=>p.status==='Unsolved').length.toLocaleString()}</strong></div><div className="verified-stat"><span>Verified by our harness</span><strong>{problems.filter(p=>p.harness==='Verified').length}<Check size={22}/></strong></div></section>
+ <div className={'feed-status '+(feedError||publisherStale?'stale':'')} role="status">{feedError?'Live feed unavailable — showing last received evidence.':publisherStale?'Publisher disconnected — showing last received evidence.':live?.publisherSeenAt?`Run evidence connected · refreshes ${source.refreshLabel}`:'Connecting to run evidence…'}{live?.publisherSeenAt&&<span>Last publisher contact: {new Date(live.publisherSeenAt).toLocaleString()}</span>}<small>Catalogue status remains the dated assessment; run evidence and revised priority scores update automatically{live?.rankings.length?` · ${live.rankings.length} score${live.rankings.length===1?'':'s'} revised since this snapshot`:''}.</small></div>
+ <section className="workspace"><div className="toolbar"><div className="search"><Search size={19}/><Input aria-label="Search problems" placeholder="Search a problem, number, or topic…" value={query} onChange={e=>change(setQuery)(e.target.value)}/></div><span className="order"><SlidersHorizontal size={16}/>Most likely → least likely</span></div>
+ <div className="filters"><Picker label="Problem status" value={status} options={['All','Solved','Unsolved','Independent']} onChange={change(setStatus)}/><Picker label="Category" value={category} options={categories} onChange={change(setCategory)}/><Picker label="Harness evidence" value={harness} options={['All','Verified','Candidate','Attempted','Partial result','Untried']} onChange={change(setHarness)}/><button className="reset" onClick={reset}>Reset filters <X size={14}/></button></div>
+ <div className="result-line"><span aria-live="polite"><b>{filtered.length.toLocaleString()}</b> problems{data.meta.preview?' · catalogue assessment in progress':''}</span><span>Priority score / 100 · <button onClick={()=>setMethod(true)}>an estimate, not a probability</button></span></div>
+ <Table><TableHeader><TableRow><TableHead className="rank-col">Rank</TableHead><TableHead>Problem & category</TableHead><TableHead>Catalogue</TableHead><TableHead>Harness fit</TableHead><TableHead className="last-col">Evidence</TableHead></TableRow></TableHeader><TableBody>{shown.map(p=><TableRow key={p.id}><TableCell className="rank-cell">{String(p.rank).padStart(2,'0')}</TableCell><TableCell className="problem-cell"><button className="problem-link" onClick={()=>setSelected(p)}><span className="problem-id">#{p.id}</span><span className="statement"><MathText text={p.statement} compact/></span><ArrowUpRight size={16}/></button><div className="tags">{p.tags.slice(0,3).map(t=><button key={t} onClick={()=>change(setCategory)(t)}>{t}</button>)}{p.tags.length>3&&<span>+{p.tags.length-3}</span>}</div></TableCell><TableCell><span className={'status '+p.status.toLowerCase()}>{p.status}</span><small>{p.state.replace(' (Lean)','')}</small></TableCell><TableCell><div className="score"><strong>{p.score}</strong><span>{p.tier}</span></div><div className="track"><i style={{width:p.score+'%'}}/></div></TableCell><TableCell><span className={'evidence '+(p.harness==='Verified'?'yes':'')}>{p.harness==='Verified'&&<Check size={14}/>} {p.harness}</span><small>{byProblem.get(p.id)?.length?`Latest: ${byProblem.get(p.id)![0].outcome.replaceAll('_',' ')}`:'Snapshot evidence'}</small><button className="why" onClick={()=>setSelected(p)}>Why this rank <ArrowUpRight size={13}/></button></TableCell></TableRow>)}</TableBody></Table>
+ {!shown.length&&<div className="empty"><h2>No matching problems</h2><p>Try a broader search or reset the filters.</p><Button onClick={reset}>Show all problems</Button></div>}
+ <div className="pagination"><span>{filtered.length?`${page*size+1}–${Math.min((page+1)*size,filtered.length)} of ${filtered.length}`:'0 results'}</span><Pagination className="w-auto mx-0"><PaginationContent><PaginationItem><Button variant="outline" aria-label="Previous page" disabled={page===0} onClick={()=>setPage(p=>p-1)}><ChevronLeft size={17}/></Button></PaginationItem><PaginationItem><span>Page {page+1} of {pages}</span></PaginationItem><PaginationItem><Button variant="outline" aria-label="Next page" disabled={page+1>=pages} onClick={()=>setPage(p=>p+1)}><ChevronRight size={17}/></Button></PaginationItem></PaginationContent></Pagination></div></section>
+ <footer><span>Built around verified proofs, explicit gaps, and realistic next steps.</span><button onClick={()=>setMethod(true)}>Sources & methodology <ArrowUpRight size={14}/></button></footer></main>
+ <Sheet open={!!selected} onOpenChange={v=>!v&&setSelected(null)}><SheetContent className="detail-sheet">{selected&&<><SheetHeader><div className="eyebrow">RANK {selected.rank} / PROBLEM #{selected.id}</div><SheetTitle>Erdős #{selected.id}</SheetTitle><SheetDescription>{selected.tier} · priority {selected.score}/100</SheetDescription></SheetHeader><div className="detail-body"><div className="full-statement"><MathText text={selected.statement}/></div><div className="detail-badges"><span className="status">{selected.status}</span><span className="status">{currentSelected?.harness}</span></div>{currentSelected?.brief&&<Brief text={currentSelected.brief}/>}<section className="run-history"><h3>Live run evidence</h3>{byProblem.get(selected.id)?.length?<><p>{live?.counts.find(c=>c.problem===selected.id)?.count||byProblem.get(selected.id)?.length} recorded runs · latest attempts and strongest evidence</p>{byProblem.get(selected.id)!.map(r=><article key={r.id}><strong>{r.outcome.replaceAll('_',' ')}{r.direction?` · ${r.direction==='program'?'sublemma':r.direction==='neg'?'negative direction':'positive direction'}`:''}</strong><small>{new Date(r.updatedAt).toLocaleString()} · {r.phase}</small><p>Milestone: {r.stage.replaceAll('_',' ')}<br/>Resolution claim eligible: {r.claimEligible?'Yes — review evidence recorded':'No'}</p>{r.stage==='legacy_automated_verification'&&<small>Historical automated verification; independent milestones were not recorded.</small>}</article>)}</>:<p>No live run records yet. Historical snapshot evidence is shown above.</p>}<p>Open-problem proofs remain candidate resolutions. A sublemma is never a full solution.</p></section>{currentSelected?.status!=='Solved'&&currentSelected?.partial&&<section className="run-history"><h3>Partial-result opportunity</h3><p><b>{currentSelected.partial.score}/80</b> — what the harness could certify here without resolving the problem. Judged separately from priority, which asks whether a complete proof is reachable.</p><ul>{currentSelected.partial.rationale.map((r,i)=><li key={i}>{r}</li>)}</ul></section>}<h3>Why it ranks here</h3><ul>{selected.rationale.map((r,i)=><li key={i}>{r}</li>)}</ul><h3>What would enable a solution</h3><ul>{selected.requirements.map((r,i)=><li key={i}>{r}</li>)}</ul><h3>Evidence & uncertainty</h3><p>{selected.review}</p>{selected.assessed?.on&&<p className="assessed">Assessed {selected.assessed.on}{selected.assessed.sources.length?` · evidence: ${selected.assessed.sources.join(', ')}`:''}{selected.assessed.searchFloor?` · no witness below ${selected.assessed.searchFloor.toExponential(2)}`:''}</p>}<p>{selected.formal}</p>{selected.signals.length>0&&<details><summary>Score breakdown</summary>{selected.signals.map((s,i)=><div className="signal" key={i}><span>{s.label}</span><b>{s.points>0?'+':''}{s.points}</b></div>)}</details>}<a className="source-link" href={selected.url} target="_blank" rel="noreferrer">Read the original problem <ArrowUpRight size={16}/></a></div></>}</SheetContent></Sheet>
+ <Sheet open={method} onOpenChange={setMethod}><SheetContent className="detail-sheet"><SheetHeader><div className="eyebrow">ABOUT THE RANKING</div><SheetTitle>Priority, with evidence.</SheetTitle><SheetDescription>A triage estimate for this harness, not a prediction of mathematical truth.</SheetDescription></SheetHeader><div className="detail-body"><h3>What “solve” means</h3><p>A complete Lean proof of a faithful problem statement, with no proof gaps or extra axioms. For a resolved problem, this means reconstructing its resolution. For an open problem, it requires new mathematics or a certifiable counterexample.</p><h3>How problems are compared</h3><p>Saved verified harness proofs rank first. The remaining order uses current catalogue status, existing formal proof availability, statement and solution-context signals, library readiness, finite-search opportunities, and recorded harness failures.</p><p>Every entry has an automated, problem-specific assessment. {data.meta.manually_reviewed} entries also received an additional manual review. This is not 1,217 independent solve attempts; adjacent ranks and equal scores should be treated as ties in practical confidence.</p><h3>Live evidence</h3><p>Run summaries and revised priority scores refresh every 30 seconds. A disconnected publisher is marked after two minutes; earlier results remain visible. A revised score is a later assessment of the same kind as the snapshot, published by the harness when it learns something; it re-sorts the table and recomputes tiers, and never changes catalogue status. “Candidate” means a full formal proof for an open target passed mechanical and automated faithfulness checks; independent review may still be pending.</p><h3>Reading the labels</h3><p>“Solved” includes proofs, disproofs, and other resolutions in the literature. “Verified” refers only to our harness’s saved proof evidence. Existing external Lean proofs help assess feasibility but do not count as our harness solving a problem. Independent problems are listed separately.</p><h3>Limits</h3><p>Scores are not calibrated probabilities. Text signals can miss deep dependencies or overestimate how useful a known solution is. Trial budgets, formalization choices, and available providers affect outcomes. A failed or credit-interrupted run does not establish impossibility.</p><h3>Sources</h3><p><a href="https://github.com/teorth/erdosproblems" target="_blank" rel="noreferrer">Community catalogue and status metadata ↗</a></p><p><a href="https://www.erdosproblems.com/range/1-1217" target="_blank" rel="noreferrer">Erdős Problems statements and context ↗</a></p><p>Local harness results and saved-proof regression, reviewed {data.meta.snapshot}. All 1,217 statements and categories are present; four independent problems are counted separately from solved and unsolved.</p></div></SheetContent></Sheet>
+ </>;
+}

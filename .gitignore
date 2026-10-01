@@ -38,3 +38,6 @@ next-env.d.ts
 /work/
 
 *.tsbuildinfo
+
+# encrypted static build (GitHub Pages)
+/dist-static/
