@@ -1,6 +1,8 @@
 # Erdős Atlas
 
-A private, searchable ranking of all 1,217 Erdős catalogue problems as of 9 September 2026. Filters distinguish published mathematical status, category, and harness proof evidence. Each assessment exposes reasons, enabling work, and score contributions.
+The companion site for erdos-harness, an LLM + Lean 4 harness for attempting Erdős problems. A personal project by Nick Kudeba, built with Claude Code and Codex.
+
+A searchable ranking of all 1,217 Erdős catalogue problems as of 9 September 2026. Filters distinguish published mathematical status, category, and harness proof evidence. Each assessment exposes reasons, enabling work, and score contributions.
 
 Scores are relative heuristic priorities, not probabilities. 66 entries have additional manual review; no new solve attempts were conducted for this index. Data provenance and snapshot hashes are embedded in app/data.json. Ranking generation and retained source snapshots live in ../atlas-data.
 
